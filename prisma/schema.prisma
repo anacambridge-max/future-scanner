@@ -1,0 +1,455 @@
+// FUTURE SCANNER — Phase 2 database schema
+// PostgreSQL + Prisma
+// No broker order-execution data model is included in V1.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum InstrumentType {
+  INDEX
+  FUTURE
+  OPTION
+}
+
+enum OptionType {
+  CE
+  PE
+}
+
+enum SignalDirection {
+  BUY
+  SELL
+  NEUTRAL
+}
+
+enum SetupType {
+  FAKE_BREAKOUT
+  MASTER_CANDLE
+  GAP
+}
+
+enum SignalStatus {
+  WAIT
+  WATCHLIST
+  SETUP_DETECTED
+  CONFIRMATION_PENDING
+  QUALIFIED_BUY
+  QUALIFIED_SELL
+  EVENT_RISK
+  INVALIDATED
+  TRIGGERED
+  STOPPED
+  TARGET_HIT
+  EXPIRED
+}
+
+enum DataQuality {
+  LIVE
+  DELAYED
+  STALE
+  DISCONNECTED
+  DATA_INVALID
+  ERROR
+}
+
+enum RuleCategory {
+  CONTEXT
+  LOCATION
+  STRUCTURE
+  SETUP
+  PRICE
+  VOLUME
+  EMA
+  MARKET
+  EVENT
+  TIME
+  RISK
+  TRIGGER
+  MANAGEMENT
+}
+
+enum RuleState {
+  PASS
+  FAIL
+  WARNING
+  NA
+}
+
+enum StopMethod {
+  ATR
+  STRUCTURE
+}
+
+enum AlertType {
+  SETUP_DETECTED
+  CONFIRMATION
+  QUALIFIED_BUY
+  QUALIFIED_SELL
+  ENTRY_TRIGGERED
+  STOP_HIT
+  TARGET_HIT
+  EVENT_RISK
+  MARKET_CONTEXT_CHANGE
+}
+
+enum AlertChannel {
+  BROWSER
+  TELEGRAM
+  WHATSAPP
+  EMAIL
+}
+
+enum TradeResult {
+  OPEN
+  WIN
+  LOSS
+  BREAKEVEN
+  CANCELLED
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  settings     Setting?
+  watchlists   Watchlist[]
+  alerts       Alert[]
+  signals      Signal[]
+  trades       Trade[]
+  journal      JournalEntry[]
+  backtests    BacktestRun[]
+  dailyStats   DailyStat[]
+}
+
+model Setting {
+  id                     String   @id @default(cuid())
+  userId                 String   @unique
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scannerMode            String   @default("paper")
+  marketDataProvider     String   @default("upstox")
+  timeframe              String   @default("5m")
+  emaFast                Int      @default(10)
+  emaSlow                Int      @default(20)
+  atrLength              Int      @default(14)
+  volumeThreshold        Decimal? @db.Decimal(12, 4)
+  gapThreshold           Decimal? @db.Decimal(12, 4)
+  masterMinRange         Decimal? @db.Decimal(18, 6)
+  masterAtrMultiplier    Decimal? @db.Decimal(12, 4)
+  masterMaxInsideCandles Int?
+  breakoutConfirmation   String?
+  stopMethod             StopMethod @default(STRUCTURE)
+  targetRR               Decimal? @db.Decimal(12, 4)
+  earlySessionEnabled    Boolean  @default(true)
+  earlySessionStart      String   @default("09:15")
+  earlySessionEnd        String   @default("10:00")
+  marketFilterEnabled    Boolean  @default(true)
+  eventFilterEnabled     Boolean  @default(true)
+  riskPerTrade           Decimal? @db.Decimal(18, 2)
+  maxDailyLoss           Decimal? @db.Decimal(18, 2)
+  maxTradesPerDay        Int?
+  maxCorrelatedPositions Int?
+  slippage               Decimal? @db.Decimal(18, 6)
+  brokerage              Decimal? @db.Decimal(18, 6)
+  accountCapital         Decimal? @db.Decimal(18, 2)
+  updatedAt              DateTime @updatedAt
+}
+
+model Instrument {
+  id                String         @id @default(cuid())
+  provider          String
+  providerKey       String         @unique
+  symbol            String
+  exchange          String
+  instrumentType    InstrumentType
+  underlyingSymbol  String?
+  expiry            DateTime?
+  strike            Decimal?       @db.Decimal(18, 6)
+  optionType        OptionType?
+  lotSize           Int?
+  tickSize          Decimal?       @db.Decimal(18, 6)
+  isActive          Boolean        @default(true)
+  metadata          Json?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  marketData        MarketData[]
+  signals           Signal[]
+  watchlists        Watchlist[]
+  trades            Trade[]
+  journalEntries    JournalEntry[]
+
+  @@index([symbol])
+  @@index([underlyingSymbol, expiry])
+  @@index([instrumentType, isActive])
+}
+
+model MarketData {
+  id             String      @id @default(cuid())
+  instrumentId   String
+  instrument     Instrument  @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  timeframe      String
+  candleTime     DateTime
+  open           Decimal     @db.Decimal(18, 6)
+  high           Decimal     @db.Decimal(18, 6)
+  low            Decimal     @db.Decimal(18, 6)
+  close          Decimal     @db.Decimal(18, 6)
+  volume         Decimal?    @db.Decimal(24, 6)
+  openInterest   Decimal?    @db.Decimal(24, 6)
+  dataQuality    DataQuality
+  provider       String
+  providerRef    String?
+  rawSnapshot    Json?
+  createdAt      DateTime    @default(now())
+
+  @@unique([instrumentId, timeframe, candleTime])
+  @@index([instrumentId, timeframe, candleTime])
+  @@index([candleTime])
+}
+
+model Signal {
+  id                  String          @id @default(cuid())
+  userId              String?
+  user                User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  instrumentId        String
+  instrument          Instrument      @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+  direction           SignalDirection
+  setupType           SetupType
+  status              SignalStatus
+  timeframe           String
+  level               Decimal?        @db.Decimal(18, 6)
+  entry               Decimal?        @db.Decimal(18, 6)
+  invalidation        Decimal?        @db.Decimal(18, 6)
+  stop                Decimal?        @db.Decimal(18, 6)
+  target              Decimal?        @db.Decimal(18, 6)
+  riskPerUnit         Decimal?        @db.Decimal(18, 6)
+  rewardRisk           Decimal?        @db.Decimal(12, 4)
+  positionSize        Decimal?        @db.Decimal(18, 6)
+  score               Decimal?        @db.Decimal(12, 4)
+  confidence          Decimal?        @db.Decimal(12, 4)
+  volumeState         String?
+  emaState            String?
+  marketState         String?
+  eventState          String?
+  timeState           String?
+  dataQuality         DataQuality
+  signalTimestamp     DateTime
+  expiresAt           DateTime?
+  marketSnapshot      Json
+  setupSnapshot       Json
+  riskSnapshot        Json?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  rules               SignalRule[]
+  events              SignalEvent[]
+  trades              Trade[]
+
+  @@index([instrumentId, signalTimestamp])
+  @@index([status, signalTimestamp])
+  @@index([setupType, direction, status])
+  @@index([userId, signalTimestamp])
+}
+
+model SignalRule {
+  id          String       @id @default(cuid())
+  signalId    String
+  signal      Signal       @relation(fields: [signalId], references: [id], onDelete: Cascade)
+  ruleName    String
+  category    RuleCategory
+  state       RuleState
+  passed      Boolean
+  value       Json?
+  threshold   Json?
+  message     String
+  evaluatedAt DateTime     @default(now())
+
+  @@index([signalId, category])
+}
+
+model SignalEvent {
+  id          String       @id @default(cuid())
+  signalId    String
+  signal      Signal       @relation(fields: [signalId], references: [id], onDelete: Cascade)
+  fromStatus  SignalStatus?
+  toStatus    SignalStatus
+  reason      String?
+  snapshot    Json?
+  createdAt   DateTime     @default(now())
+
+  @@index([signalId, createdAt])
+}
+
+model Trade {
+  id            String       @id @default(cuid())
+  userId        String?
+  user          User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  signalId      String?
+  signal        Signal?      @relation(fields: [signalId], references: [id], onDelete: SetNull)
+  instrumentId  String
+  instrument    Instrument   @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+  direction     SignalDirection
+  quantity      Decimal      @db.Decimal(18, 6)
+  entryPrice    Decimal?     @db.Decimal(18, 6)
+  stopPrice     Decimal?     @db.Decimal(18, 6)
+  targetPrice   Decimal?     @db.Decimal(18, 6)
+  exitPrice     Decimal?     @db.Decimal(18, 6)
+  riskAmount    Decimal?     @db.Decimal(18, 2)
+  pnl           Decimal?     @db.Decimal(18, 2)
+  result        TradeResult  @default(OPEN)
+  brokerage     Decimal?     @db.Decimal(18, 2)
+  fees          Decimal?     @db.Decimal(18, 2)
+  slippage      Decimal?     @db.Decimal(18, 2)
+  openedAt      DateTime?
+  closedAt      DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  @@index([userId, openedAt])
+  @@index([instrumentId, openedAt])
+  @@index([result, closedAt])
+}
+
+model JournalEntry {
+  id               String        @id @default(cuid())
+  userId           String
+  user             User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrumentId     String
+  instrument       Instrument    @relation(fields: [instrumentId], references: [id], onDelete: Restrict)
+  tradeId          String?
+  dateTime         DateTime
+  setupType        SetupType?
+  direction        SignalDirection?
+  marketContext    Json?
+  yh               Decimal?      @db.Decimal(18, 6)
+  yl               Decimal?      @db.Decimal(18, 6)
+  emaState         String?
+  volumeState      String?
+  eventState       String?
+  entry            Decimal?      @db.Decimal(18, 6)
+  stop             Decimal?      @db.Decimal(18, 6)
+  target           Decimal?      @db.Decimal(18, 6)
+  exit             Decimal?      @db.Decimal(18, 6)
+  result           TradeResult?
+  rMultiple        Decimal?      @db.Decimal(12, 4)
+  mae              Decimal?      @db.Decimal(18, 6)
+  mfe              Decimal?      @db.Decimal(18, 6)
+  notes            String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([userId, dateTime])
+  @@index([instrumentId, dateTime])
+}
+
+model Watchlist {
+  id           String      @id @default(cuid())
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instrumentId String
+  instrument   Instrument  @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+  pinned       Boolean     @default(false)
+  monitorSetup Boolean     @default(false)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  @@unique([userId, instrumentId])
+  @@index([userId, pinned])
+}
+
+model Alert {
+  id           String       @id @default(cuid())
+  userId       String
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  alertType    AlertType
+  channel      AlertChannel @default(BROWSER)
+  enabled      Boolean      @default(true)
+  instrumentId String?
+  setupType    SetupType?
+  config       Json?
+  lastSentAt   DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([userId, enabled, alertType])
+}
+
+model BacktestRun {
+  id                 String      @id @default(cuid())
+  userId             String?
+  user               User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  startDate          DateTime
+  endDate            DateTime
+  timeframe          String
+  setupType          SetupType?
+  direction          SignalDirection?
+  volumeThreshold    Decimal?    @db.Decimal(12, 4)
+  emaFast            Int?
+  emaSlow            Int?
+  stopMethod         StopMethod?
+  targetRR            Decimal?   @db.Decimal(12, 4)
+  totalTrades        Int         @default(0)
+  winningTrades      Int         @default(0)
+  losingTrades       Int         @default(0)
+  winRate            Decimal?    @db.Decimal(12, 4)
+  averageWin         Decimal?    @db.Decimal(18, 6)
+  averageLoss        Decimal?    @db.Decimal(18, 6)
+  expectancy         Decimal?    @db.Decimal(18, 6)
+  profitFactor       Decimal?    @db.Decimal(18, 6)
+  maxDrawdown        Decimal?    @db.Decimal(18, 6)
+  averageR           Decimal?    @db.Decimal(12, 4)
+  bestSetup          SetupType?
+  worstSetup         SetupType?
+  timeOfDayStats     Json?
+  parameters         Json
+  resultsSnapshot    Json?
+  createdAt          DateTime    @default(now())
+
+  @@index([userId, createdAt])
+  @@index([startDate, endDate])
+}
+
+model DailyStat {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tradingDate      DateTime
+  setupsAppeared   Int       @default(0)
+  qualifiedSetups  Int       @default(0)
+  takenTrades      Int       @default(0)
+  skippedTrades    Int       @default(0)
+  winningTrades    Int       @default(0)
+  losingTrades     Int       @default(0)
+  averageR         Decimal?  @db.Decimal(12, 4)
+  pnl              Decimal?  @db.Decimal(18, 2)
+  marketCondition  Json?
+  bestSetup        SetupType?
+  worstSetup       SetupType?
+  executionErrors  Int       @default(0)
+  dailyLockout     Boolean   @default(false)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([userId, tradingDate])
+  @@index([tradingDate])
+}
+
+model EventCalendar {
+  id          String    @id @default(cuid())
+  eventTime   DateTime
+  title       String
+  description String?
+  impact      String?
+  symbols     Json?
+  source      String
+  isManual    Boolean   @default(false)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([eventTime, isActive])
+}
